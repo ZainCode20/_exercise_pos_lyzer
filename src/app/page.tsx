@@ -1,3 +1,4 @@
+
 'use client';
 
 import type { ChangeEvent } from 'react';
@@ -36,6 +37,9 @@ export default function Home() {
 
   const cameraFeedRef = useRef<{ captureFrame: () => Promise<string | null> }>(null);
   const analysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Use a ref to track if analysis *should* be running, independent of async operations
+  // Moved this outside of startAnalysis to fix hook call error
+  const isAnalyzingRef = useRef(isAnalyzing);
   const { toast } = useToast();
 
    // Define stopAnalysis first as other callbacks depend on it
@@ -49,10 +53,11 @@ export default function Home() {
     // Reset analysis and loading states if they were active
     setIsAnalyzing(false);
     setIsLoading(false);
+    isAnalyzingRef.current = false; // Update the ref when stopping
     console.log("Analysis stopped.");
     // Optional: Clear feedback when stopping analysis?
     // setFeedback(null);
-  }, []); // No dependencies, only uses refs and setters
+  }, []); // Dependency: isAnalyzingRef (setter is stable, but good practice)
 
   // Define handleCameraReady next
   const handleCameraReady = useCallback((ready: boolean, permissionGranted: boolean | null, cameraError?: string | null) => {
@@ -148,13 +153,21 @@ export default function Home() {
     setFeedback(null);
     setIsLoading(true); // Set loading true at the start
     setIsAnalyzing(true);
+    isAnalyzingRef.current = true; // Set the ref to true when starting
     console.log("Starting analysis...");
 
 
     const performAnalysis = async () => {
         // Re-check conditions before capturing frame inside interval
-        if (!analysisIntervalRef.current && !isAnalyzing && !isLoading) { // Check if analysis was stopped
+        // Check if analysis was stopped using the ref
+        if (!isAnalyzingRef.current) {
             console.log("Analysis stopped externally, skipping analysis cycle.");
+            // Ensure the interval is cleared if the ref says we stopped
+            if (analysisIntervalRef.current) {
+              clearInterval(analysisIntervalRef.current);
+              analysisIntervalRef.current = null;
+              console.log("Interval cleared from within performAnalysis due to external stop.");
+            }
             return;
         }
          if (!cameraFeedRef.current || !isCameraOn || !isCameraReady || hasCameraPermission !== true) {
@@ -182,8 +195,8 @@ export default function Home() {
                     exerciseType: selectedExercise,
                 });
                 console.log("AI Analysis Result:", result);
-                 // Only update state if analysis is still supposed to be running
-                 if (isAnalyzingRef.current) { // Use a ref to check the *intended* state
+                 // Only update state if analysis is still supposed to be running (check ref)
+                 if (isAnalyzingRef.current) {
                     setFeedback(result);
                     setError(null); // Clear previous analysis errors on success
                  } else {
@@ -197,7 +210,7 @@ export default function Home() {
         } catch (err) {
             console.error('Error during AI analysis:', err);
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred during analysis.';
-             // Only update state if analysis is still supposed to be running
+             // Only update state if analysis is still supposed to be running (check ref)
             if (isAnalyzingRef.current) {
                 setError(`AI Error: ${errorMessage}`); // Prefix AI errors
                 setFeedback(null); // Clear feedback on error
@@ -216,9 +229,6 @@ export default function Home() {
         }
     };
 
-    // Use a ref to track if analysis *should* be running, independent of async operations
-    const isAnalyzingRef = useRef(true);
-    isAnalyzingRef.current = true;
 
     // Stop any existing interval *before* starting a new one or the initial analysis
     if (analysisIntervalRef.current) {
@@ -229,12 +239,13 @@ export default function Home() {
     // Set states *after* clearing any previous interval
     setIsAnalyzing(true);
     setIsLoading(true);
+    isAnalyzingRef.current = true; // Ensure ref is true
 
 
     // Perform initial analysis immediately
     await performAnalysis();
 
-    // Check if analysis wasn't stopped due to an error during the first run
+    // Check if analysis wasn't stopped due to an error during the first run (using ref)
     if (isAnalyzingRef.current) {
         setIsLoading(false); // Set loading false *after* the first successful/attempted analysis
         // Set up interval only if the first analysis didn't fail and stop analysis
@@ -248,25 +259,22 @@ export default function Home() {
 
   }, [selectedExercise, isCameraReady, isCameraOn, hasCameraPermission, toast, stopAnalysis, error ]); // Dependencies
 
-   // Effect to update the isAnalyzingRef when isAnalyzing state changes externally (e.g., stop button)
-   const isAnalyzingRef = useRef(isAnalyzing);
+   // Effect to sync the ref when the isAnalyzing state changes
    useEffect(() => {
        isAnalyzingRef.current = isAnalyzing;
        // If analysis is stopped externally (isAnalyzing becomes false), ensure ref is updated
+       // and interval is cleared if it hasn't been already (safety net)
        if (!isAnalyzing && analysisIntervalRef.current) {
-           console.log("External stop detected, clearing interval via useEffect cleanup is redundant but safe.");
-           // stopAnalysis(); // Redundant if stop button calls it, but handles other cases
+           console.log("External stop detected via useEffect, ensuring interval cleanup.");
+           stopAnalysis(); // Use stopAnalysis to handle cleanup consistently
        }
-   }, [isAnalyzing]);
+   }, [isAnalyzing, stopAnalysis]); // Add stopAnalysis dependency
 
   useEffect(() => {
     // Cleanup interval on component unmount
     return () => {
-      // Use the ref here for cleanup condition? Might be safer.
-      // if (isAnalyzingRef.current) { // Only stop if it thinks it should be running?
         isAnalyzingRef.current = false; // Mark as not analyzing
         stopAnalysis(); // Use stopAnalysis for cleanup
-      // }
     };
   }, [stopAnalysis]); // Add stopAnalysis to dependency array
 
@@ -348,9 +356,9 @@ export default function Home() {
             </Button>
           )}
 
-            {/* General Error Alert - Show if there's an error AND not currently loading the *initial* frame */}
+            {/* General Error Alert - Show if there's an error */}
             {/* Keep showing camera/permission errors even if trying to analyze */}
-            {error && (!isLoading || isAnalyzing) && ( // Show during analysis too if error occurs
+            {error && (
                 <Alert variant="destructive" className="mt-4">
                     <AlertCircle className="h-4 w-4" />
                     <AlertTitle>Error</AlertTitle>
@@ -362,6 +370,7 @@ export default function Home() {
            <div className="flex-grow"></div>
 
            {/* Informational Status (when no error, and not actively analyzing/loading first frame) */}
+           {/* Only show these if there isn't a more specific error displayed above */}
            {!error && !isAnalyzing && !isLoading && (
              <>
                {/* Case 1: Camera explicitly denied */}
