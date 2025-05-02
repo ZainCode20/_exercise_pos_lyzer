@@ -38,21 +38,21 @@ export default function Home() {
   const analysisIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const { toast } = useToast();
 
-  // Define stopAnalysis first as other callbacks depend on it
+   // Define stopAnalysis first as other callbacks depend on it
   const stopAnalysis = useCallback(() => {
+    // Clear the interval if it exists
     if (analysisIntervalRef.current) {
       clearInterval(analysisIntervalRef.current);
       analysisIntervalRef.current = null;
       console.log("Analysis interval cleared.");
     }
-    // Check if component is still mounted or analysis is active before setting state
-    if (isAnalyzing) setIsAnalyzing(false);
-    if (isLoading) setIsLoading(false); // Ensure loading state is reset
+    // Reset analysis and loading states if they were active
+    setIsAnalyzing(false);
+    setIsLoading(false);
     console.log("Analysis stopped.");
-    // Do not clear general errors here, only feedback specific to analysis.
-    // Keep camera errors displayed if they exist.
-    // setFeedback(null); // Keep feedback displayed when stopping? Optional.
-  }, [isAnalyzing, isLoading]); // Dependencies: isAnalyzing, isLoading
+    // Optional: Clear feedback when stopping analysis?
+    // setFeedback(null);
+  }, []); // No dependencies, only uses refs and setters
 
   // Define handleCameraReady next
   const handleCameraReady = useCallback((ready: boolean, permissionGranted: boolean | null, cameraError?: string | null) => {
@@ -60,35 +60,43 @@ export default function Home() {
     setHasCameraPermission(permissionGranted); // Update permission state
 
     if (!ready || permissionGranted === false) {
-      setIsCameraOn(false); // Ensure camera state is off if not ready or permission denied
-      const errorMessage = cameraError || (permissionGranted === false
-        ? "Camera permission denied. Please allow camera access in browser settings."
-        : "Camera not available. Check hardware or other apps using it.");
-      setError(errorMessage); // Display the specific error
-      stopAnalysis(); // Stop analysis if camera becomes not ready
+        // If camera is not ready OR permission is denied
+        const errorMessage = cameraError || (permissionGranted === false
+            ? "Camera permission denied. Please allow camera access in browser settings."
+            : "Camera not available. Check hardware or other apps using it.");
+        setError(errorMessage); // Display the specific error
+        // If the camera was supposed to be on but isn't ready/has no permission, turn the state off and stop analysis
+        if (isCameraOn) {
+            setIsCameraOn(false);
+            stopAnalysis();
+        }
     } else if (ready && permissionGranted === true) {
-      setError(null); // Clear previous errors if camera becomes ready with permission
+        // If camera becomes ready with permission, clear any previous errors
+        setError(null);
     }
     // If ready is true but permissionGranted is null, it means we are still waiting or haven't asked.
-    // Don't clear error in this intermediate state.
-  }, [stopAnalysis]); // Dependency: stopAnalysis
+    // Don't clear error in this intermediate state. Let the CameraFeed handle displaying prompts.
+  }, [stopAnalysis, isCameraOn]); // Dependency: stopAnalysis, isCameraOn
 
 
-  const handleCameraToggle = () => {
+  const handleCameraToggle = useCallback(() => {
     const turningOn = !isCameraOn;
-    setIsCameraOn(turningOn);
+    setIsCameraOn(turningOn); // Toggle the desired state
+
     if (!turningOn) {
       stopAnalysis(); // Stop analysis if camera is manually turned off
-      // Don't necessarily clear errors when turning off manually
+      // Optionally clear specific errors when turning off, or leave them if they are persistent hardware issues.
+      // setError(null) // Example: If you want to clear errors on manual turn-off
     } else {
-      // When turning on, clear previous *non-permission* errors
-      // Keep permission errors if they exist
+      // When *requesting* to turn on, clear previous general errors
+      // EXCEPT for persistent permission denial errors.
       if (hasCameraPermission !== false) {
         setError(null);
       }
-      // Camera readiness and permission check will be handled by CameraFeed's onReady callback
+      // CameraFeed component's useEffect triggered by `isActive={true}` will now attempt to start
+      // and the `onReady` callback (handleCameraReady) will handle success/failure/permission updates.
     }
-  };
+  }, [isCameraOn, stopAnalysis, hasCameraPermission]);
 
 
   // Define startAnalysis last
@@ -111,18 +119,18 @@ export default function Home() {
       });
       return;
     }
-     if (hasCameraPermission === false) {
+     if (hasCameraPermission !== true) { // Strict check for granted permission
         toast({
-            title: "Permission Denied",
-            description: error || "Camera permission is required. Please enable it in browser settings.",
+            title: "Permission Required",
+            description: error || "Camera permission is required or still pending. Please enable it.",
             variant: "destructive",
         });
         return;
      }
-    if (!isCameraReady || hasCameraPermission === null) { // Also check for null permission state
+    if (!isCameraReady) { // Check if camera hardware/stream is actually ready
        toast({
         title: "Camera Not Ready",
-        description: error || "The camera is initializing or not ready. Check permissions or hardware.",
+        description: error || "The camera is initializing or not ready. Please wait or check hardware.",
         variant: "destructive",
       });
       return;
@@ -144,18 +152,19 @@ export default function Home() {
 
 
     const performAnalysis = async () => {
-        // Ensure analysis should still be running and camera is usable
-        if (!analysisIntervalRef.current && !isLoading && !isAnalyzing) {
-            console.log("Analysis stopped externally, skipping frame capture.");
+        // Re-check conditions before capturing frame inside interval
+        if (!analysisIntervalRef.current && !isAnalyzing && !isLoading) { // Check if analysis was stopped
+            console.log("Analysis stopped externally, skipping analysis cycle.");
             return;
         }
          if (!cameraFeedRef.current || !isCameraOn || !isCameraReady || hasCameraPermission !== true) {
-            console.log("Camera became unavailable or permission lost, stopping analysis.");
-            stopAnalysis();
-            setError("Camera became unavailable or permission was revoked during analysis.");
+            console.log("Camera became unavailable, lost permission, or turned off during analysis.");
+            const currentError = error || "Camera became unavailable, permission was lost, or it was turned off during analysis.";
+            setError(currentError);
+            stopAnalysis(); // Stop analysis if camera state changes unfavorably
             toast({
                 title: "Camera Issue",
-                description: "Camera became unavailable or permission was lost.",
+                description: currentError,
                 variant: "destructive"
             });
             return;
@@ -174,21 +183,22 @@ export default function Home() {
                 });
                 console.log("AI Analysis Result:", result);
                  // Only update state if analysis is still supposed to be running
-                 // Check interval ref OR isLoading (for the very first analysis)
-                 if (analysisIntervalRef.current || isLoading) {
+                 if (isAnalyzingRef.current) { // Use a ref to check the *intended* state
                     setFeedback(result);
                     setError(null); // Clear previous analysis errors on success
+                 } else {
+                    console.log("Analysis stopped before AI result arrived.");
                  }
             } else {
                  console.warn("Failed to capture frame. Skipping this analysis cycle.");
-                 // Keep existing feedback or show a temporary message? For now, do nothing.
                  // Consider adding a toast notification here if it happens repeatedly.
+                 // toast({ title: "Warning", description: "Could not capture frame.", variant: "default" });
             }
         } catch (err) {
             console.error('Error during AI analysis:', err);
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred during analysis.';
              // Only update state if analysis is still supposed to be running
-            if (analysisIntervalRef.current || isLoading) {
+            if (isAnalyzingRef.current) {
                 setError(`AI Error: ${errorMessage}`); // Prefix AI errors
                 setFeedback(null); // Clear feedback on error
                 toast({
@@ -197,29 +207,36 @@ export default function Home() {
                     variant: "destructive",
                   });
                 stopAnalysis(); // Stop analysis completely on AI error
+            } else {
+                console.log("AI Error occurred after analysis stopped.");
             }
         } finally {
-            // Only set loading to false AFTER the first analysis is done inside the interval setup
+             // Ensure loading state is correctly managed, especially for the first analysis run.
+             // The logic below handles setting isLoading=false after the first run.
         }
     };
 
-    // Stop any existing interval before starting a new one
+    // Use a ref to track if analysis *should* be running, independent of async operations
+    const isAnalyzingRef = useRef(true);
+    isAnalyzingRef.current = true;
+
+    // Stop any existing interval *before* starting a new one or the initial analysis
     if (analysisIntervalRef.current) {
        clearInterval(analysisIntervalRef.current);
        analysisIntervalRef.current = null;
+       console.log("Cleared previous analysis interval.");
     }
-    // Set analyzing true again after stopAnalysis might have been called implicitly if user changed exercise etc.
+    // Set states *after* clearing any previous interval
     setIsAnalyzing(true);
-    setIsLoading(true); // Ensure loading is true
+    setIsLoading(true);
 
 
     // Perform initial analysis immediately
     await performAnalysis();
 
     // Check if analysis wasn't stopped due to an error during the first run
-    // Use refs/state that reflect the current intention to analyze
-    if (isAnalyzing) { // Re-check isAnalyzing state, might have been set to false by performAnalysis error
-        setIsLoading(false);
+    if (isAnalyzingRef.current) {
+        setIsLoading(false); // Set loading false *after* the first successful/attempted analysis
         // Set up interval only if the first analysis didn't fail and stop analysis
         analysisIntervalRef.current = setInterval(performAnalysis, ANALYSIS_INTERVAL);
         console.log("Analysis interval started.");
@@ -229,19 +246,33 @@ export default function Home() {
          console.log("Analysis was stopped during initial run, interval not started.");
     }
 
-  }, [selectedExercise, isCameraReady, isCameraOn, hasCameraPermission, toast, stopAnalysis, isAnalyzing, isLoading, error]); // Added hasCameraPermission
+  }, [selectedExercise, isCameraReady, isCameraOn, hasCameraPermission, toast, stopAnalysis, error ]); // Dependencies
 
-
+   // Effect to update the isAnalyzingRef when isAnalyzing state changes externally (e.g., stop button)
+   const isAnalyzingRef = useRef(isAnalyzing);
+   useEffect(() => {
+       isAnalyzingRef.current = isAnalyzing;
+       // If analysis is stopped externally (isAnalyzing becomes false), ensure ref is updated
+       if (!isAnalyzing && analysisIntervalRef.current) {
+           console.log("External stop detected, clearing interval via useEffect cleanup is redundant but safe.");
+           // stopAnalysis(); // Redundant if stop button calls it, but handles other cases
+       }
+   }, [isAnalyzing]);
 
   useEffect(() => {
     // Cleanup interval on component unmount
     return () => {
-      stopAnalysis(); // Use stopAnalysis for cleanup
+      // Use the ref here for cleanup condition? Might be safer.
+      // if (isAnalyzingRef.current) { // Only stop if it thinks it should be running?
+        isAnalyzingRef.current = false; // Mark as not analyzing
+        stopAnalysis(); // Use stopAnalysis for cleanup
+      // }
     };
   }, [stopAnalysis]); // Add stopAnalysis to dependency array
 
   // Recalculate if start button should be disabled
-  const isStartDisabled = !selectedExercise || !isCameraReady || !isCameraOn || isLoading || isAnalyzing || hasCameraPermission !== true;
+  // Needs exercise selected, camera ON, camera READY, permission GRANTED, and not already loading/analyzing.
+  const isStartDisabled = !selectedExercise || !isCameraOn || !isCameraReady || hasCameraPermission !== true || isLoading || isAnalyzing ;
 
 
   return (
@@ -259,12 +290,11 @@ export default function Home() {
               onValueChange={(value) => {
                  setSelectedExercise(value);
                  setFeedback(null); // Clear feedback when changing exercise
-                 // Don't clear general error, only analysis-specific state
                  if (isAnalyzing) {
-                    stopAnalysis();
+                    stopAnalysis(); // Stop analysis if exercise changes while running
                  }
               }}
-              disabled={isAnalyzing || isLoading}
+              disabled={isAnalyzing || isLoading} // Disable select while analyzing/loading
             >
               <SelectTrigger id="exercise-select" className="w-full">
                 <SelectValue placeholder="Choose an exercise..." />
@@ -283,12 +313,12 @@ export default function Home() {
               onClick={handleCameraToggle}
               variant="outline"
               className="w-full"
-              // Disable toggle if camera isn't ready *unless* it's currently on (to allow turning off)
-              // Also disable if permission is denied.
-              disabled={(!isCameraReady && !isCameraOn) || hasCameraPermission === false}
+              // Only disable the toggle button if permission is explicitly denied.
+              // Allow clicking to turn on even if not ready (it will try to get ready).
+              disabled={hasCameraPermission === false}
           >
               {isCameraOn ? <VideoOff className="mr-2 h-4 w-4" /> : <Video className="mr-2 h-4 w-4" />}
-              {isCameraOn ? 'Turn Camera Off' : 'Turn Camera On'}
+              {isCameraOn ? 'Turn Camera Off' : (hasCameraPermission === false ? 'Camera Disabled' : 'Turn Camera On')}
           </Button>
 
           {isAnalyzing ? (
@@ -304,14 +334,23 @@ export default function Home() {
               {isLoading ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : (
-                 hasCameraPermission === true ? <Zap className="mr-2 h-4 w-4" /> : <Ban className="mr-2 h-4 w-4" /> // Show Ban icon if no permission
+                 // Show Zap if ready to start, Ban if permission denied stops it
+                 isStartDisabled && hasCameraPermission === false ? <Ban className="mr-2 h-4 w-4" /> : <Zap className="mr-2 h-4 w-4" />
               )}
-              {isLoading ? 'Initializing...' : (hasCameraPermission === false ? 'Permission Denied' : 'Start Analysis')}
+              {/* Adapt button text based on disabled reason */}
+              {isLoading ? 'Initializing...' :
+               isStartDisabled && hasCameraPermission === false ? 'Permission Denied' :
+               isStartDisabled && !isCameraReady && isCameraOn ? 'Camera Not Ready' :
+               isStartDisabled && !isCameraOn ? 'Camera Off' :
+               isStartDisabled && !selectedExercise ? 'Select Exercise' :
+               'Start Analysis'
+              }
             </Button>
           )}
 
-            {/* This alert now shows general errors, including camera/permission ones */}
-            {error && !isLoading && !isAnalyzing && ( // Only show if not loading initial frame or actively analyzing
+            {/* General Error Alert - Show if there's an error AND not currently loading the *initial* frame */}
+            {/* Keep showing camera/permission errors even if trying to analyze */}
+            {error && (!isLoading || isAnalyzing) && ( // Show during analysis too if error occurs
                 <Alert variant="destructive" className="mt-4">
                     <AlertCircle className="h-4 w-4" />
                     <AlertTitle>Error</AlertTitle>
@@ -322,19 +361,11 @@ export default function Home() {
            {/* Spacer to push content below to the bottom */}
            <div className="flex-grow"></div>
 
-           {/* Informational alert about camera status if no error and not analyzing */}
+           {/* Informational Status (when no error, and not actively analyzing/loading first frame) */}
            {!error && !isAnalyzing && !isLoading && (
              <>
-               {(hasCameraPermission === null && !isCameraOn) && (
-                 <Alert variant="default" className="mt-auto mb-4 border-primary/50">
-                    <Video className="h-4 w-4 text-primary" />
-                    <AlertTitle>Camera Off</AlertTitle>
-                    <AlertDescription>
-                     Turn on the camera and grant permissions to begin.
-                    </AlertDescription>
-                 </Alert>
-               )}
-               {(hasCameraPermission === false) && (
+               {/* Case 1: Camera explicitly denied */}
+               {hasCameraPermission === false && (
                  <Alert variant="destructive" className="mt-auto mb-4">
                     <Ban className="h-4 w-4" />
                     <AlertTitle>Permission Required</AlertTitle>
@@ -343,16 +374,38 @@ export default function Home() {
                     </AlertDescription>
                  </Alert>
                )}
-                {(hasCameraPermission === true && !isCameraOn) && (
+                {/* Case 2: Camera off (and permission not denied) */}
+               {hasCameraPermission !== false && !isCameraOn && (
                  <Alert variant="default" className="mt-auto mb-4 border-primary/50">
                     <Video className="h-4 w-4 text-primary" />
                     <AlertTitle>Camera Off</AlertTitle>
                     <AlertDescription>
-                     Turn on the camera to start.
+                     {hasCameraPermission === null ? 'Turn on the camera and grant permissions to begin.' : 'Turn on the camera to start.'}
                     </AlertDescription>
                  </Alert>
                )}
-               {/* Add case for Camera Ready but exercise not selected? Covered elsewhere */}
+               {/* Case 3: Camera ON, Ready, Permission Granted, but no exercise selected */}
+               {isCameraOn && isCameraReady && hasCameraPermission === true && !selectedExercise && (
+                  <Alert variant="default" className="mt-auto mb-4 border-accent/50">
+                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-accent inline-block mr-1" viewBox="0 0 20 20" fill="currentColor">
+                         <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586l-1.293-1.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 10.586V7z" clipRule="evenodd" />
+                     </svg>
+                      <AlertTitle>Select Exercise</AlertTitle>
+                      <AlertDescription>
+                          Choose an exercise from the sidebar.
+                      </AlertDescription>
+                  </Alert>
+               )}
+               {/* Case 4: Camera ON, Permission Granted, but NOT ready yet */}
+                {isCameraOn && !isCameraReady && hasCameraPermission === true && (
+                   <Alert variant="default" className="mt-auto mb-4 border-yellow-500/50">
+                      <Loader2 className="h-4 w-4 text-yellow-600 animate-spin" />
+                       <AlertTitle>Camera Initializing</AlertTitle>
+                       <AlertDescription>
+                           Please wait, the camera is starting...
+                       </AlertDescription>
+                   </Alert>
+                )}
              </>
            )}
 
@@ -363,66 +416,61 @@ export default function Home() {
         <Card className="w-full max-w-3xl shadow-lg">
           <CardHeader>
             <CardTitle className="text-2xl text-center text-primary">
-              {selectedExercise && isCameraOn && hasCameraPermission === true ? `Analyzing: ${selectedExercise}` : 'Camera Feed'}
-              {isCameraOn && hasCameraPermission === false && ' (Permission Denied)'}
-              {isCameraOn && hasCameraPermission === null && ' (Waiting for Permission)'}
+              {/* More dynamic title */}
+               {!isCameraOn ? 'Camera Feed (Off)' :
+                hasCameraPermission === false ? 'Camera Feed (Permission Denied)' :
+                hasCameraPermission === null ? 'Camera Feed (Waiting for Permission)' :
+                !isCameraReady ? 'Camera Feed (Initializing)' :
+                isAnalyzing ? `Analyzing: ${selectedExercise}` :
+                selectedExercise ? `Ready for: ${selectedExercise}` :
+                'Camera Feed (Select Exercise)'
+               }
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col items-center space-y-4">
              <div className="w-full aspect-video bg-muted rounded-md overflow-hidden relative flex items-center justify-center">
-                 {/* CameraFeed will display its own internal errors/state/permission requests */}
+                 {/* CameraFeed handles its internal state display (errors, prompts) */}
                 <CameraFeed
                   ref={cameraFeedRef}
                   onReady={handleCameraReady} // Pass the callback
-                  isActive={isCameraOn}      // Control activation
+                  isActive={isCameraOn}      // Control activation based on user toggle
                 />
-                {/* Loading overlay for initial analysis phase, only show if camera is ready and has permission */}
-                 {isCameraOn && isCameraReady && hasCameraPermission === true && isLoading && !error && (
-                    <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white z-20">
+                {/* Loading overlay for *initial* analysis phase (when isLoading is true) */}
+                {/* Show only if camera is on, ready, permission granted, and we are in the initial loading phase */}
+                 {isCameraOn && isCameraReady && hasCameraPermission === true && isLoading && (
+                    <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white z-20 rounded-md">
                         <Loader2 className="h-12 w-12 animate-spin mb-2" />
                         <p>Initializing Analysis...</p>
                     </div>
                  )}
              </div>
 
-            {/* Display feedback if available and analysis was successful */}
+            {/* Display feedback if available and analysis was successful (no current error) */}
             {feedback && !error && (
                  <FeedbackDisplay feedback={feedback} />
             )}
 
-            {/* Display status messages - more specific based on state */}
-             {isAnalyzing && !feedback && !error && !isLoading && (
+            {/* Status messages shown *during* analysis or when ready */}
+             {isAnalyzing && !isLoading && !error && ( // Show when actively analyzing (after initial load) and no error
                  <Alert variant="default" className="w-full">
                      <Zap className="h-4 w-4 text-accent" />
                      <AlertTitle>Analysis Running</AlertTitle>
                      <AlertDescription>
-                        Hold your position. Analyzing your form...
+                        Hold your position. Analyzing your {selectedExercise} form...
                         <Loader2 className="inline-block ml-2 h-4 w-4 animate-spin" />
                      </AlertDescription>
                  </Alert>
             )}
-             {!isAnalyzing && !feedback && !error && selectedExercise && isCameraOn && hasCameraPermission === true && !isLoading && (
-                 <Alert variant="default" className="w-full">
-                     <Zap className="h-4 w-4 text-accent" />
+             {!isAnalyzing && !isLoading && !error && selectedExercise && isCameraOn && isCameraReady && hasCameraPermission === true && ( // Ready state
+                 <Alert variant="default" className="w-full border-green-500/50">
+                     <Zap className="h-4 w-4 text-green-600" />
                      <AlertTitle>Ready to Analyze</AlertTitle>
                      <AlertDescription>
                          Click "Start Analysis" when you're in position for {selectedExercise}.
                      </AlertDescription>
                  </Alert>
              )}
-             {/* Message when camera is on but no exercise selected */}
-              {!selectedExercise && isCameraOn && hasCameraPermission === true && !error && (
-                 <Alert variant="default" className="w-full">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 inline-block mr-1" viewBox="0 0 20 20" fill="currentColor">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v3.586l-1.293-1.293a1 1 0 00-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 10.586V7z" clipRule="evenodd" />
-                    </svg>
-                     <AlertTitle>Select Exercise</AlertTitle>
-                     <AlertDescription>
-                         Choose an exercise from the sidebar to begin analysis.
-                     </AlertDescription>
-                 </Alert>
-             )}
-              {/* Message for permission denied shown in sidebar */}
+             {/* Note: Other states like 'Camera Off', 'Permission Denied', 'Select Exercise' are handled by alerts in the sidebar */}
           </CardContent>
         </Card>
       </main>
