@@ -56,6 +56,17 @@ export default function Home() {
   };
 
 
+  const stopAnalysis = useCallback(() => {
+    if (analysisIntervalRef.current) {
+      clearInterval(analysisIntervalRef.current);
+      analysisIntervalRef.current = null;
+    }
+    setIsAnalyzing(false);
+    setIsLoading(false);
+    // Optionally clear feedback when stopping:
+    // setFeedback(null);
+  }, []);
+
   const startAnalysis = useCallback(async () => {
     if (!selectedExercise || !isCameraReady || !isCameraOn) {
       toast({
@@ -81,6 +92,9 @@ export default function Home() {
 
     const performAnalysis = async () => {
         if (!cameraFeedRef.current) return;
+        // Ensure analysis doesn't run if the component stopped analyzing in the meantime
+        if (!analysisIntervalRef.current && !isLoading) return;
+
         try {
             const videoDataUri = await cameraFeedRef.current.captureFrame();
             console.log("Captured frame:", videoDataUri ? videoDataUri.substring(0, 50) + "..." : "null"); // Log start of data URI
@@ -117,30 +131,23 @@ export default function Home() {
     await performAnalysis();
     setIsLoading(false); // Set loading false after first analysis
 
-    // Then set up interval for subsequent analyses
-    analysisIntervalRef.current = setInterval(performAnalysis, ANALYSIS_INTERVAL);
+    // Then set up interval for subsequent analyses only if still analyzing
+     if (analysisIntervalRef.current === null && isAnalyzing) { // Check isAnalyzing again
+        analysisIntervalRef.current = setInterval(performAnalysis, ANALYSIS_INTERVAL);
+     }
 
-  }, [selectedExercise, isCameraReady, isCameraOn, toast]);
 
-  const stopAnalysis = useCallback(() => {
-    if (analysisIntervalRef.current) {
-      clearInterval(analysisIntervalRef.current);
-      analysisIntervalRef.current = null;
-    }
-    setIsAnalyzing(false);
-    setIsLoading(false);
-    // Optionally clear feedback when stopping:
-    // setFeedback(null);
-  }, []);
+  }, [selectedExercise, isCameraReady, isCameraOn, toast, stopAnalysis, isAnalyzing, isLoading]);
+
+
 
   useEffect(() => {
-    // Cleanup interval on component unmount or when isAnalyzing changes to false
+    // Cleanup interval on component unmount or when stopAnalysis reference changes
+    // This ensures the interval is cleared if the user navigates away or stops analysis
     return () => {
-      if (analysisIntervalRef.current) {
-        clearInterval(analysisIntervalRef.current);
-      }
+      stopAnalysis();
     };
-  }, []);
+  }, [stopAnalysis]);
 
   return (
     <div className="flex flex-col md:flex-row min-h-screen bg-secondary">
@@ -234,7 +241,7 @@ export default function Home() {
                   onReady={handleCameraReady}
                   isActive={isCameraOn}
                 />
-                {isCameraOn && isLoading && !isAnalyzing && ( // Show loading indicator only during initial load
+                {isCameraOn && isLoading && ( // Show loading indicator only during initial loading before analysis starts
                     <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center text-white">
                         <Loader2 className="h-12 w-12 animate-spin mb-2" />
                         <p>Initializing Analysis...</p>
@@ -265,11 +272,11 @@ export default function Home() {
                      <AlertTitle>Analysis Running</AlertTitle>
                      <AlertDescription>
                         Hold your position. Analyzing your form...
-                        {feedback === null && <Loader2 className="inline-block ml-2 h-4 w-4 animate-spin" />}
+                        <Loader2 className="inline-block ml-2 h-4 w-4 animate-spin" />
                      </AlertDescription>
                  </Alert>
             )}
-             {!isAnalyzing && !feedback && !error && selectedExercise && isCameraOn &&(
+             {!isAnalyzing && !feedback && !error && selectedExercise && isCameraOn && !isLoading && (
                  <Alert variant="default" className="w-full">
                      <Zap className="h-4 w-4 text-accent" />
                      <AlertTitle>Ready to Analyze</AlertTitle>
@@ -285,10 +292,3 @@ export default function Home() {
     </div>
   );
 }
-
-// Ensure to stop analysis when the component unmounts or dependencies change unexpectedly
-useEffect(() => {
-  return () => {
-    stopAnalysis();
-  };
-}, [stopAnalysis]);
