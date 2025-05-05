@@ -38,7 +38,7 @@ Here's a brief overview of the key directories and files:
 ├── tsconfig.json           # TypeScript configuration
 ├── package.json            # Project dependencies and scripts 1 
 └── README.md               # This file   
-
+```
 
 ## 🛠️ Getting Started
 
@@ -55,18 +55,22 @@ Follow these steps to get GymSight running locally:
 ```bash
 git clone [https://github.com/your-username/gymsight.git](https://github.com/your-username/gymsight.git) # Replace with your repo URL
 cd gymsight
-
+```
+```bash
 npm install
 # or
 yarn install
 # or
 pnpm install
-
+```
+```bash
 # .env.local
 GOOGLE_AI_API_KEY=YOUR_API_KEY_HERE
-
+```
+```bash
 npm run dev
 # or
 yarn dev
 # or
 pnpm dev
+```
