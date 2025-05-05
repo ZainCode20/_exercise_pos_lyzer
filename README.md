@@ -22,7 +22,7 @@ GymSight is built with a modern and efficient technology stack:
 
 Here's a brief overview of the key directories and files:
 
-.
+```bash
 ├── src/
 │   ├── app/
 │   │   └── page.tsx        # Main application component (camera, selection, AI integration)
