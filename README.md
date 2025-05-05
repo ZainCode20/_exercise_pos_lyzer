@@ -56,6 +56,7 @@ Follow these steps to get GymSight running locally:
 git clone [https://github.com/your-username/gymsight.git](https://github.com/your-username/gymsight.git) # Replace with your repo URL
 cd gymsight
 ```
+**3. Install Dependencies:**
 ```bash
 npm install
 # or
@@ -63,10 +64,12 @@ yarn install
 # or
 pnpm install
 ```
+**4. Set Up Environment Variables:**
 ```bash
 # .env.local
 GOOGLE_AI_API_KEY=YOUR_API_KEY_HERE
 ```
+**5. Run the Development Server:**
 ```bash
 npm run dev
 # or
